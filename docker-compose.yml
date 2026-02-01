@@ -1,6 +1,9 @@
 services:
   grok2api:
-    image: ghcr.io/chenyme/grok2api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grok2api-local:latest
     ports:
       - "8000:8000"
     volumes:
