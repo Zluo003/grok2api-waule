@@ -4,7 +4,10 @@ import orjson
 import uuid
 import time
 import asyncio
+import re
 from typing import AsyncGenerator, Tuple
+
+from app.services.grok.upscale import VideoUpscaleManager
 
 from app.core.config import setting
 from app.core.exception import GrokApiException
@@ -359,10 +362,39 @@ class GrokResponseProcessor:
 
     @staticmethod
     async def _build_video_content(video_url: str, auth_token: str) -> str:
-        """构建视频内容"""
+        """构建视频内容（包含自动超分逻辑）"""
         logger.debug(f"[Processor] 检测到视频: {video_url}")
-        full_url = f"https://assets.grok.com/{video_url}"
         
+        # 提取视频ID (例如: /users/USERID/generated/VIDEOID/generated_video.mp4)
+        video_id = ""
+        uuid_pattern = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        matches = re.findall(uuid_pattern, video_url)
+        if len(matches) >= 2:
+            video_id = matches[1]  # 通常第二个UUID是视频ID
+        elif len(matches) == 1:
+            video_id = matches[0]
+
+        final_url = f"https://assets.grok.com/{video_url}"
+        
+        # 尝试自动超分
+        if video_id:
+            try:
+                logger.info(f"[Processor] 正在为视频 {video_id} 执行自动超分...")
+                upscale_result = await VideoUpscaleManager.upscale(video_id, auth_token)
+                if upscale_result and (hd_url := upscale_result.get("hdMediaUrl")):
+                    logger.info(f"[Processor] 自动超分成功: {hd_url}")
+                    # 自动缓存HD视频
+                    hd_path = hd_url.replace("https://assets.grok.com", "")
+                    cache_path = await video_cache_service.download_video(hd_path, auth_token)
+                    if cache_path:
+                        local_hd_path = hd_path.lstrip('/').replace('/', '-')
+                        base_url = setting.global_config.get("base_url", "")
+                        final_url = f"{base_url}/images/{local_hd_path}" if base_url else f"/images/{local_hd_path}"
+                        return f'<video src="{final_url}" controls="controls" width="500" height="300"></video>\n'
+            except Exception as e:
+                logger.warning(f"[Processor] 自动超分失败: {e}，将返回原视频")
+
+        # fallback 到原视频缓存
         try:
             cache_path = await video_cache_service.download_video(f"/{video_url}", auth_token)
             if cache_path:
@@ -371,9 +403,9 @@ class GrokResponseProcessor:
                 local_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
                 return f'<video src="{local_url}" controls="controls" width="500" height="300"></video>\n'
         except Exception as e:
-            logger.warning(f"[Processor] 缓存视频失败: {e}")
+            logger.warning(f"[Processor] 缓存原视频失败: {e}")
         
-        return f'<video src="{full_url}" controls="controls" width="500" height="300"></video>\n'
+        return f'<video src="{final_url}" controls="controls" width="500" height="300"></video>\n'
 
     @staticmethod
     async def _append_images(content: str, images: list, auth_token: str) -> str:
