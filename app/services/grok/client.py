@@ -253,6 +253,11 @@ class GrokClient:
                     
                     # 检查可配置状态码错误 - 外层重试
                     if response.status_code in retry_codes:
+                        # 对于 401 和 429，不建议在同一个 Token 上立即重试，直接报错让外层换号
+                        if response.status_code in [401, 429]:
+                            logger.error(f"[Client] {response.status_code}错误，直接换号")
+                            GrokClient._handle_error(response, token)
+
                         if outer_retry < MAX_OUTER_RETRY:
                             delay = (outer_retry + 1) * 0.1  # 渐进延迟：0.1s, 0.2s, 0.3s
                             logger.warning(f"[Client] 遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})，等待{delay}s...")

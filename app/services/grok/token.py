@@ -5,6 +5,7 @@ import time
 import asyncio
 import aiofiles
 import portalocker
+import random
 from pathlib import Path
 from curl_cffi.requests import AsyncSession
 from typing import Dict, Any, Optional, Tuple
@@ -272,10 +273,15 @@ class GrokTokenManager:
                     used.append((key, remaining))
 
             if unused:
-                return unused[0], -1
+                # 随机选择一个未使用过的Token，实现轮换
+                return random.choice(unused), -1
             if used:
+                # 按剩余次数降序排列
                 used.sort(key=lambda x: x[1], reverse=True)
-                return used[0][0], used[0][1]
+                # 在剩余次数最高的那一批中随机选择
+                max_remaining = used[0][1]
+                best_tokens = [k for k, r in used if r == max_remaining]
+                return random.choice(best_tokens), max_remaining
             return None, None
 
         # 快照
@@ -368,6 +374,15 @@ class GrokTokenManager:
                         
                         # 检查可配置状态码错误 - 外层重试
                         if response.status_code in retry_codes:
+                            # 对于 401 和 429，不建议在同一个 Token 上立即重试
+                            if response.status_code in [401, 429]:
+                                logger.error(f"[Token] {response.status_code}错误，停止重试")
+                                if response.status_code == 401:
+                                    await self.record_failure(auth_token, 401, "Token失效")
+                                else:
+                                    await self.record_failure(auth_token, response.status_code, f"错误: {response.status_code}")
+                                return None
+
                             if outer_retry < MAX_OUTER_RETRY:
                                 delay = (outer_retry + 1) * 0.1  # 渐进延迟：0.1s, 0.2s, 0.3s
                                 logger.warning(f"[Token] 遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})，等待{delay}s...")
